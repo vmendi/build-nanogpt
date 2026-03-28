@@ -279,18 +279,27 @@ def launch_samples():
     num_return_sequences = 5
     max_length = 30
 
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = "mps"
+    print(f"using device: {device}")
+
     model = GPT.from_pretrained("gpt2")
     model.eval()
-    model.to("mps")
+    model.to(device)
     
     import tiktoken
     enc = tiktoken.get_encoding("gpt2")
     tokens = enc.encode("Hello, I'm a language model,")
     tokens = torch.tensor(tokens, dtype=torch.long) # (8,)
     tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)    # (5, 8)
-    xgen = tokens.to("mps")
+    xgen = tokens.to(device)
     torch.manual_seed(42)
-    torch.mps.manual_seed(42)
+    torch.cuda.manual_seed(42)
+    if device == "mps":
+        torch.mps.manual_seed(42)
     
     while xgen.size(1) < max_length:
         with torch.no_grad():

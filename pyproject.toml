@@ -21,3 +21,12 @@ dependencies = [
 [tool.uv]
 # Script-only repo: install dependencies only, no importable package to build.
 package = false
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu129" }
+triton = { index = "pytorch-cu129" }
