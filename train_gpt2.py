@@ -1,3 +1,4 @@
+import argparse
 import os
 import math
 import time
@@ -306,9 +307,6 @@ def launch_samples():
         decoded = enc.decode(tokens)
         print(f">{i}: {decoded}")
 
-launch_samples()
-
-
 
 # -----------------------------------------------------------------------------
 # simple launch:
@@ -556,3 +554,18 @@ def launch_training():
 
     if ddp:
         destroy_process_group()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode",
+        choices=("train", "samples"),
+        default="train",
+        help="train: full training loop; samples: quick pretrained GPT-2 text generation",
+    )
+    args = parser.parse_args()
+    if args.mode == "samples":
+        launch_samples()
+    else:
+        launch_training()
