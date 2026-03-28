@@ -4,7 +4,7 @@ Configure local ~/.ssh/config and prepare a remote host for this repo.
 
 Pass the SSH line from your provider, for example:
 
-  uv run scripts/configure_remote_ssh.py ssh root@194.68.245.30 -p 22112 -i ~/.ssh/vmendi
+  uv run scripts/configure_remote_ssh.py ssh root@69.30.85.59 -p 22048 -i ~/.ssh/vmendi
 
 Options can appear before or after the destination, matching common provider strings.
 

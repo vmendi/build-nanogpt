@@ -275,6 +275,7 @@ def get_most_likely_row(tokens, mask, logits):
     pred_norm = avg_loss.argmin().item()
     return pred_norm
 
+# -----------------------------------------------------------------------------
 def launch_samples():
     num_return_sequences = 5
     max_length = 30
