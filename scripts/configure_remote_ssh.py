@@ -4,7 +4,7 @@ Configure local ~/.ssh/config and prepare a remote host for this repo.
 
 Pass the SSH line from your provider, for example:
 
-  uv run scripts/configure_remote_ssh.py ssh root@69.30.85.238 -p 22133 -i ~/.ssh/vmendi
+  uv run scripts/configure_remote_ssh.py ssh root@194.68.245.30 -p 22112 -i ~/.ssh/vmendi
 
 Options can appear before or after the destination, matching common provider strings.
 
@@ -265,6 +265,10 @@ def remote_bootstrap_script(remote_path: str, clone_url: str | None) -> str:
         '    echo "Remote path $REMOTE_PATH is missing or not a git repo; pass --clone-url or clone manually." >&2',
         "    exit 1",
         "  fi",
+        "else",
+        '  cd "$REMOTE_PATH"',
+        '  echo "==> git pull..."',
+        "  git pull --ff-only",
         "fi",
         'cd "$REMOTE_PATH"',
         'echo "==> uv sync (large CUDA/PyTorch download; may take several minutes)..."',

@@ -28,5 +28,5 @@ url = "https://download.pytorch.org/whl/cu129"
 explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu129" }
-triton = { index = "pytorch-cu129" }
+torch = { index = "pytorch-cu129", marker = "sys_platform == 'linux'" }
+triton = { index = "pytorch-cu129", marker = "sys_platform == 'linux'" }
