@@ -1,0 +1,23 @@
+[project]
+name = "build-nanogpt"
+version = "0.1.0"
+description = "From-scratch nanoGPT / GPT-2 reproduction (Karpathy lecture code)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "tiktoken",
+    "numpy",
+    "requests",
+    "tqdm",
+    "transformers",
+    "datasets",
+    "matplotlib",
+    "ipykernel",
+    "pip>=26.0.1",
+    "ipywidgets>=8.1.8",
+]
+
+[tool.uv]
+# Script-only repo: install dependencies only, no importable package to build.
+package = false

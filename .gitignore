@@ -1,0 +1,6 @@
+.venv/
+edu_fineweb10B/
+hellaswag/
+log/
+__pycache__/
+.DS_Store
