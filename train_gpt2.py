@@ -8,6 +8,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from hellaswag import render_example, iterate_examples
+import tiktoken
+
 # -----------------------------------------------------------------------------
 
 class CausalSelfAttention(nn.Module):
@@ -250,6 +252,37 @@ class DataLoaderLite:
             self.current_shard = (self.current_shard + 1) % len(self.shards)
             self.tokens = load_tokens(self.shards[self.current_shard])
             self.current_position = B * T * self.process_rank
+        return x, y
+
+class DataLoaderLiteShakespeare:
+    def __init__(self, B, T):
+        self.B = B
+        self.T = T
+        with open("input.txt", "r") as f:
+            text = f.read()
+        self.enc = tiktoken.get_encoding("gpt2")
+        self.tokens = torch.tensor(self.enc.encode(text), dtype=torch.long)
+        print(f"tokens: {self.tokens.shape[0]} tokens")
+        print(f"1 epoch: {len(self.tokens) // (B * T)} batches")
+
+        self.current_position = 0
+
+    def next_batch(self):
+        B, T = self.B, self.T
+        buf = self.tokens[self.current_position : self.current_position+B*T+1]
+        x = (buf[:-1]).view(B, T) # inputs
+        y = (buf[1:]).view(B, T) # targets
+        # advance the position in the tensor
+        self.current_position += B * T
+        # if loading the next batch would be out of bounds, reset
+        if self.current_position + (B * T + 1) > len(self.tokens):
+            self.current_position = 0
+
+        # Decode x, print it
+        print("-" * 100)
+        print(f"{self.enc.decode(x.flatten().tolist())}")
+        print("-" * 100)
+
         return x, y
 
 # -----------------------------------------------------------------------------
@@ -566,16 +599,51 @@ def launch_training():
         destroy_process_group()
 
 
+def launch_training_shakespeare():
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = "mps"
+    # device = "cpu"
+    print(f"using device: {device}")
+
+    # torch.manual_seed(42)
+    # if device == "cuda":
+    #     torch.cuda.manual_seed(42)
+    # if device == "mps":
+    #     torch.mps.manual_seed(42)
+    
+    train_loader = DataLoaderLiteShakespeare(B=4, T=32)
+    
+    model = GPT(GPTConfig())
+    model.to(device)
+    # print(f"model parameters: {sum(p.numel() for p in model.parameters())}")
+    
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+    for i in range(2641):
+        x, y = train_loader.next_batch()
+        x, y = x.to(device), y.to(device)
+        optimizer.zero_grad()
+        logits, loss = model(x, y)
+        loss.backward()
+        optimizer.step()
+        print(f"step {i}: loss: {loss.item()}")
+
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
-        choices=("train", "samples"),
+        choices=("train", "train-shakespeare", "samples"),
         default="train",
         help="train: full training loop; samples: quick pretrained GPT-2 text generation",
     )
     args = parser.parse_args()
     if args.mode == "samples":
         launch_samples()
+    elif args.mode == "train-shakespeare":
+        launch_training_shakespeare()
     else:
         launch_training()
