@@ -279,9 +279,9 @@ class DataLoaderLiteShakespeare:
             self.current_position = 0
 
         # Decode x, print it
-        print("-" * 100)
-        print(f"{self.enc.decode(x.flatten().tolist())}")
-        print("-" * 100)
+        # print("-" * 100)
+        # print(f"{self.enc.decode(x.flatten().tolist())}")
+        # print("-" * 100)
 
         return x, y
 
@@ -608,11 +608,11 @@ def launch_training_shakespeare():
     # device = "cpu"
     print(f"using device: {device}")
 
-    # torch.manual_seed(42)
-    # if device == "cuda":
-    #     torch.cuda.manual_seed(42)
-    # if device == "mps":
-    #     torch.mps.manual_seed(42)
+    torch.manual_seed(42)
+    if device == "cuda":
+        torch.cuda.manual_seed(42)
+    if device == "mps":
+        torch.mps.manual_seed(42)
     
     train_loader = DataLoaderLiteShakespeare(B=4, T=32)
     
@@ -621,7 +621,7 @@ def launch_training_shakespeare():
     # print(f"model parameters: {sum(p.numel() for p in model.parameters())}")
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-    for i in range(2641):
+    for i in range(50):
         x, y = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
