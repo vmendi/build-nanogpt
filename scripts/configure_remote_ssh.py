@@ -2,13 +2,18 @@
 """
 Configure local ~/.ssh/config and prepare a remote host for this repo.
 
-Pass the SSH line from your provider, for example:
+**RunPod (default when no SSH line is given):** set RUNPOD_API_KEY and run with no
+positional arguments. The script calls https://rest.runpod.io/v1 to find your running
+pod and uses its public IP and SSH port mapping.
 
-  uv run scripts/configure_remote_ssh.py ssh root@69.30.85.59 -p 22048 -i ~/.ssh/vmendi
+  export RUNPOD_API_KEY=...
+  uv run scripts/configure_remote_ssh.py --identity ~/.ssh/your_key
+
+**Manual provider string:** pass the SSH line from any provider, for example:
+
+  uv run scripts/configure_remote_ssh.py ssh root@69.30.85.59 -p 22048 -i ~/.ssh/your_key
 
 Options can appear before or after the destination, matching common provider strings.
-
-By default the repo is placed under /workspace/... on the remote (extra volume on many GPU hosts).
 """
 
 from __future__ import annotations
@@ -20,6 +25,10 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import requests
+
+RUNPOD_REST_BASE = "https://rest.runpod.io/v1"
 
 
 def _expand(p: str) -> str:
@@ -91,6 +100,105 @@ def parse_ssh_provider_args(tokens: list[str]) -> tuple[str, str | None, str | N
         raise ValueError("missing destination (user@host or host)")
 
     return dest, (str(port) if port is not None else None), identity
+
+
+def runpod_api_key(explicit: str | None) -> str | None:
+    if explicit:
+        return explicit.strip()
+    k = os.environ.get("RUNPOD_API_KEY", "").strip()
+    return k if k else None
+
+
+def fetch_runpod_ssh(
+    api_key: str,
+    *,
+    pod_id: str | None = None,
+    pod_name: str | None = None,
+    default_user: str = "root",
+) -> tuple[str, str | None, str]:
+    """
+    Call RunPod REST API (GET /pods) and return (destination, port, summary line).
+
+    destination is user@host for ~/.ssh/config; port is the public SSH port when mapped.
+    """
+    url = f"{RUNPOD_REST_BASE}/pods"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    params: dict[str, str | int] = {"desiredStatus": "RUNNING"}
+    if pod_id:
+        params["id"] = pod_id
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=60)
+    except requests.RequestException as e:
+        raise RuntimeError(f"RunPod API request failed: {e}") from e
+    if r.status_code == 401:
+        raise RuntimeError("RunPod API rejected the key (401). Check RUNPOD_API_KEY.")
+    if r.status_code == 403:
+        raise RuntimeError("RunPod API forbidden (403). Check API key permissions.")
+    if not r.ok:
+        raise RuntimeError(
+            f"RunPod API error {r.status_code}: {r.text[:500] if r.text else '(no body)'}"
+        )
+    try:
+        pods = r.json()
+    except ValueError as e:
+        raise RuntimeError("RunPod API returned non-JSON response.") from e
+    if not isinstance(pods, list):
+        raise RuntimeError("RunPod API returned unexpected payload (expected a list of pods).")
+
+    if pod_name:
+        pods = [p for p in pods if isinstance(p, dict) and p.get("name") == pod_name]
+        if not pods:
+            raise RuntimeError(f"No RUNNING pod found with name {pod_name!r}.")
+        if len(pods) > 1:
+            raise RuntimeError(
+                f"Multiple RUNNING pods named {pod_name!r}; use --runpod-pod-id to pick one."
+            )
+
+    if not pods:
+        hint = " Create or start a pod, or pass --runpod-pod-id / --runpod-name."
+        if pod_id:
+            raise RuntimeError(f"No RUNNING pod matched id {pod_id!r}.{hint}")
+        raise RuntimeError(f"No RUNNING pods found.{hint}")
+
+    if len(pods) > 1 and not pod_id and not pod_name:
+        lines = []
+        for p in pods:
+            if not isinstance(p, dict):
+                continue
+            pid = p.get("id", "?")
+            pname = p.get("name") or ""
+            lines.append(f"  - id={pid!r} name={pname!r}")
+        msg = "Multiple RUNNING pods; pick one with --runpod-pod-id or --runpod-name:\n"
+        msg += "\n".join(lines)
+        raise RuntimeError(msg)
+
+    pod = pods[0]
+    if not isinstance(pod, dict):
+        raise RuntimeError("RunPod API returned an invalid pod entry.")
+
+    pid = pod.get("id", "?")
+    public_ip = pod.get("publicIp")
+    port_mappings = pod.get("portMappings") or {}
+    if not public_ip:
+        raise RuntimeError(
+            f"Pod {pid!r} has no publicIp yet (still provisioning?). Retry in a moment."
+        )
+
+    ssh_port: str | None = None
+    if isinstance(port_mappings, dict):
+        for key in ("22", 22):
+            if key in port_mappings:
+                ssh_port = str(port_mappings[key])
+                break
+    if ssh_port is None:
+        raise RuntimeError(
+            f"Pod {pid!r} has no port 22 mapping in portMappings yet "
+            f"(got {port_mappings!r}). SSH may still be starting."
+        )
+
+    dest = f"{default_user}@{public_ip}"
+    summary = f"RunPod pod {pid} -> {dest} -p {ssh_port}"
+    return dest, ssh_port, summary
 
 
 def split_user_host(destination: str) -> tuple[str, str | None]:
@@ -332,22 +440,69 @@ def main() -> int:
         action="store_true",
         help="Print actions without writing config or running remote commands",
     )
+    parser.add_argument(
+        "--runpod-api-key",
+        default=None,
+        metavar="KEY",
+        help="RunPod API key (default: RUNPOD_API_KEY env). Used when no SSH tokens are given.",
+    )
+    parser.add_argument(
+        "--runpod-pod-id",
+        default=None,
+        metavar="ID",
+        help="Select a specific RUNNING pod when multiple match (RunPod API mode).",
+    )
+    parser.add_argument(
+        "--runpod-name",
+        default=None,
+        metavar="NAME",
+        help="Select a RUNNING pod by its display name (RunPod API mode).",
+    )
+    parser.add_argument(
+        "--runpod-user",
+        default="root",
+        metavar="USER",
+        help="SSH user for RunPod API mode (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--identity",
+        default=None,
+        metavar="PATH",
+        help="SSH private key path (RunPod API mode; same role as -i in a manual ssh line).",
+    )
     args = parser.parse_args()
 
     tokens = list(args.ssh_tokens)
     if tokens and tokens[0] == "--":
         tokens = tokens[1:]
 
-    if not tokens:
-        parser.error(
-            "pass the provider SSH line, e.g.\n"
-            "  python scripts/configure_remote_ssh.py ssh root@63.141.33.45 -p 22135 -i ~/.ssh/vmendi"
-        )
+    use_runpod = not bool(tokens)
+    api_key = runpod_api_key(args.runpod_api_key)
 
-    try:
-        dest, port, identity = parse_ssh_provider_args(tokens)
-    except ValueError as e:
-        parser.error(str(e))
+    if use_runpod:
+        if not api_key:
+            parser.error(
+                "With no SSH tokens, set RUNPOD_API_KEY (or pass --runpod-api-key) to use "
+                "the RunPod REST API, or pass a provider SSH line, e.g.\n"
+                "  python scripts/configure_remote_ssh.py ssh root@63.141.33.45 -p 22135 -i ~/.ssh/key"
+            )
+        try:
+            dest, port, runpod_summary = fetch_runpod_ssh(
+                api_key,
+                pod_id=args.runpod_pod_id,
+                pod_name=args.runpod_name,
+                default_user=args.runpod_user,
+            )
+        except RuntimeError as e:
+            parser.error(str(e))
+        identity = _expand(args.identity) if args.identity else None
+        if not args.dry_run:
+            print(runpod_summary, file=sys.stderr)
+    else:
+        try:
+            dest, port, identity = parse_ssh_provider_args(tokens)
+        except ValueError as e:
+            parser.error(str(e))
 
     hostname, user_from_dest = split_user_host(dest)
     user = user_from_dest
