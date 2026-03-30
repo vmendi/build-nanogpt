@@ -615,7 +615,16 @@ def launch_training_shakespeare():
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         torch.mps.manual_seed(1337)
     
-    train_loader = DataLoaderLiteShakespeare(B=16, T=1024)
+    total_batch_size = 524288 # 2**19, ~0.5M, in number of tokens
+    B = 32 # micro batch size
+    T = 1024 # sequence length
+    assert total_batch_size % (B * T) == 0, "make sure total_batch_size is divisible by B * T"
+    grad_accum_steps = total_batch_size // (B * T)
+    if master_process:
+        print(f"total desired batch size: {total_batch_size}")
+        print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
+
+    train_loader = DataLoaderLiteShakespeare(B=B, T=T)
 
     torch.set_float32_matmul_precision('high')
     
@@ -641,7 +650,7 @@ def launch_training_shakespeare():
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
         return min_lr + coeff * (max_lr - min_lr)
     
-    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8, fused=True)
+    optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=max_lr, device_type=device)
 
     # profile_step = 3
     # profiler = torch.profiler.profile(
@@ -657,26 +666,34 @@ def launch_training_shakespeare():
         #     profiler.__enter__()
 
         t0 = time.time()
-        x, y = train_loader.next_batch()
-        x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
-        with torch.autocast(device_type=device, dtype=torch.bfloat16):
-            logits, loss = model(x, y)
-        loss.backward()
+        loss_accum = 0.0
+        for micro_step in range(grad_accum_steps):
+            x, y = train_loader.next_batch()
+            x, y = x.to(device), y.to(device)
+            with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                logits, loss = model(x, y)
+            loss = loss / grad_accum_steps
+            loss_accum += loss.detach()
+            loss.backward()
+
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
         lr = get_lr(i)
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
         optimizer.step()
+
         if device.startswith("cuda"):
             torch.cuda.synchronize()
         elif device.startswith("mps"):
             torch.backends.mps.synchronize()
-        loss_scalar = loss.item()
+
         t1 = time.time()
         dt = t1 - t0
-        tokens_per_sec = (train_loader.B * train_loader.T) / dt
-        print(f"step {i}: loss: {loss_scalar} | norm: {norm:.4f} | lr: {lr:.4e} | time: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
+        tokens_processed = train_loader.B * train_loader.T * grad_accum_steps
+        tokens_per_sec = tokens_processed / dt
+        print(f"step {i}: loss: {loss_accum.item():.6f} | norm: {norm:.4f} | lr: {lr:.4e} | time: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
 
         # if i == profile_step:
         #     profiler.__exit__(None, None, None)
@@ -703,6 +720,7 @@ if __name__ == "__main__":
     if args.mode == "samples":
         launch_samples()
     elif args.mode == "train-shakespeare":
+        master_process = True
         launch_training_shakespeare()
     else:
         launch_training()
