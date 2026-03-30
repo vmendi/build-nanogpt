@@ -276,7 +276,8 @@ class DataLoaderLiteShakespeare:
         self.current_position += B * T
         # if loading the next batch would be out of bounds, reset
         if self.current_position + (B * T + 1) > len(self.tokens):
-            self.current_position = 0
+            print(f"We ended the epoch at {self.current_position}")
+            self.current_position = 0            
 
         # Decode x, print it
         # print("-" * 100)
@@ -608,27 +609,41 @@ def launch_training_shakespeare():
     # device = "cpu"
     print(f"using device: {device}")
 
-    torch.manual_seed(42)
-    if device == "cuda":
-        torch.cuda.manual_seed(42)
-    if device == "mps":
-        torch.mps.manual_seed(42)
+    torch.manual_seed(1337)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(1337)
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        torch.mps.manual_seed(1337)
     
-    train_loader = DataLoaderLiteShakespeare(B=4, T=32)
+    train_loader = DataLoaderLiteShakespeare(B=16, T=1024)
+
+    torch.set_float32_matmul_precision('high')
     
     model = GPT(GPTConfig())
     model.to(device)
+    model = torch.compile(model)
     # print(f"model parameters: {sum(p.numel() for p in model.parameters())}")
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
     for i in range(50):
+        t0 = time.time()
         x, y = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
-        logits, loss = model(x, y)
+        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+            logits, loss = model(x, y)
         loss.backward()
         optimizer.step()
-        print(f"step {i}: loss: {loss.item()}")
+        if device.startswith("cuda"):
+            torch.cuda.synchronize()
+        elif device.startswith("mps"):
+            torch.backends.mps.synchronize()
+        loss_scalar = loss.item()   # Forces synchronization anyway...
+        t1 = time.time()
+        dt = t1 - t0
+        tokens_per_sec = (train_loader.B * train_loader.T) / dt
+        print(f"step {i}: loss: {loss_scalar} | time: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
+        
 
 
 
